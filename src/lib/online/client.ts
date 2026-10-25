@@ -1,5 +1,5 @@
-import { isValidMove } from "../game/engine";
-import type { GameMode } from "../game/types";
+import { applyMove, isValidMove } from "../game/engine";
+import type { GameMode, GameState } from "../game/types";
 import { errorCode, friendlyError } from "./messages";
 import type { RoomAction, RoomRow, Transport } from "./transport";
 import { viewRoom } from "./view";
@@ -7,13 +7,22 @@ import { viewRoom } from "./view";
 export interface OnlineState {
   readonly userId: string | null;
   readonly room: RoomRow | null;
+  /** Temporary local board shown while the server validates a move. */
+  readonly optimisticGame: GameState | null;
   /** User ids currently connected to the room channel (includes me once subscribed). */
   readonly presence: readonly string[];
   readonly busy: boolean;
   readonly error: string | null;
 }
 
-export const INITIAL_ONLINE_STATE: OnlineState = { userId: null, room: null, presence: [], busy: false, error: null };
+export const INITIAL_ONLINE_STATE: OnlineState = {
+  userId: null,
+  room: null,
+  optimisticGame: null,
+  presence: [],
+  busy: false,
+  error: null,
+};
 
 const STORAGE_KEY = "tic-tac-toe:online:session";
 
@@ -23,16 +32,15 @@ interface Saved {
 }
 
 /**
- * Client-side controller for one player's online session. It never decides game outcomes:
- * every move is sent to the trusted backend, and the board shown always comes from the
- * room row the backend wrote (delivered live over Realtime).
+ * Client-side controller for one player's online session. The server remains authoritative;
+ * optimisticGame is only a temporary visual preview while a move is being confirmed.
  */
 export function createOnlineClient(transport: Transport, storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null) {
   let state: OnlineState = INITIAL_ONLINE_STATE;
   const listeners = new Set<() => void>();
   let unwatch: (() => void) | null = null;
-  /** False once the screen is gone: a slow request finishing later must not open a channel. */
   let attached = true;
+  let pendingMove: { code: string; baseVersion: number } | null = null;
 
   const set = (patch: Partial<OnlineState>) => {
     state = { ...state, ...patch };
@@ -47,6 +55,7 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
       // storage unavailable: resume-after-refresh simply won't work
     }
   };
+
   const loadSaved = (): Saved | null => {
     try {
       const raw = storage?.getItem(STORAGE_KEY);
@@ -59,10 +68,16 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
     }
   };
 
-  /** Ignore rows that are older than what we already show (out-of-order events). */
+  /** Ignore older rows and clear a preview once a newer server version arrives. */
   const applyRow = (row: RoomRow) => {
     const current = state.room;
     if (current && current.code === row.code && row.version < current.version) return;
+    const pending = pendingMove;
+    if (pending && pending.code === row.code && row.version > pending.baseVersion) {
+      pendingMove = null;
+      set({ room: row, optimisticGame: null });
+      return;
+    }
     set({ room: row });
   };
 
@@ -79,8 +94,7 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
       onRow: applyRow,
       onPresence: (ids) => set({ presence: ids }),
       onResync: () => {
-        void transport
-          .fetchRoom(code)
+        void transport.fetchRoom(code)
           .then((row) => row && state.room?.code === code && applyRow(row))
           .catch(() => undefined);
       },
@@ -88,7 +102,8 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
   };
 
   const enter = (room: RoomRow, userId: string, name: string) => {
-    set({ room, userId, error: null });
+    pendingMove = null;
+    set({ room, userId, error: null, optimisticGame: null });
     save({ code: room.code, name });
     startWatching(room.code, userId);
   };
@@ -101,15 +116,24 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
       const userId = await transport.getUserId();
       const result = await transport.call(action);
       if (!result.ok) {
-        set({ busy: false, userId, error: friendlyError(result.error) });
+        pendingMove = null;
+        set({ busy: false, userId, error: friendlyError(result.error), optimisticGame: null });
         return false;
       }
-      if (action.action === "create" || action.action === "join") enter(result.room, userId, name);
-      else applyRow(result.room);
+      if (action.action === "create" || action.action === "join") {
+        enter(result.room, userId, name);
+      } else if (action.action === "move") {
+        pendingMove = null;
+        set({ optimisticGame: null });
+        applyRow(result.room);
+      } else {
+        applyRow(result.room);
+      }
       set({ busy: false });
       return true;
     } catch (err) {
-      set({ busy: false, error: friendlyError(errorCode(err)) });
+      pendingMove = null;
+      set({ busy: false, error: friendlyError(errorCode(err)), optimisticGame: null });
       return false;
     }
   }
@@ -118,20 +142,18 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
     getState: () => state,
     subscribe(listener: () => void) {
       listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+      return () => listeners.delete(listener);
     },
     clearError: () => state.error && set({ error: null }),
 
     createRoom: (name: string, mode: GameMode) => run({ action: "create", name, mode }, name),
     joinRoom: (code: string, name: string) => run({ action: "join", code, name }, name),
 
-    /** Tap a cell. Local checks only avoid pointless requests; the backend is the authority. */
+    /** Preview a legal move immediately, then replace it with the server-confirmed room. */
     async playMove(index: number): Promise<boolean> {
       const room = state.room;
       const v = room && viewRoom(room, state.userId);
-      if (!room || !v) return false;
+      if (!room || !v || state.busy || state.optimisticGame) return false;
       if (room.status !== "playing") return false;
       if (!v.myTurn) {
         set({ error: friendlyError("not_your_turn") });
@@ -141,6 +163,10 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
         set({ error: friendlyError("invalid_move") });
         return false;
       }
+      const preview = applyMove(room.game, index);
+      if (!preview) return false;
+      pendingMove = { code: room.code, baseVersion: room.version };
+      set({ optimisticGame: preview, error: null });
       return run({ action: "move", code: room.code, index });
     },
 
@@ -153,9 +179,10 @@ export function createOnlineClient(transport: Transport, storage: Pick<Storage, 
     /** Leave the room for good (closes it for the other player too). */
     async leave() {
       const room = state.room;
+      pendingMove = null;
       stopWatching();
       save(null);
-      set({ room: null, error: null, busy: false });
+      set({ room: null, optimisticGame: null, error: null, busy: false });
       if (room && room.status !== "abandoned") {
         try {
           await transport.call({ action: "leave", code: room.code });

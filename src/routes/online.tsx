@@ -5,8 +5,8 @@ import { BoardGrid, PlayerCard, pillTone, ResultCard, StatusPill } from "@/compo
 import { ExitConfirmationModal } from "@/components/game/exit-confirmation-modal";
 import { ExpandCard, GameButton, ModeOption, Shell } from "@/components/game/ui";
 import { cleanName, loadPrefs, MODE_INFO } from "@/lib/game/config";
-import { oldestMarkToVanish } from "@/lib/game/engine";
-import type { GameMode } from "@/lib/game/types";
+import { applyMove, oldestMarkToVanish } from "@/lib/game/engine";
+import type { GameMode, GameState } from "@/lib/game/types";
 import { copyText } from "@/lib/online/clipboard";
 import { useOnline } from "@/lib/online/hooks";
 import { isOnlineConfigured } from "@/lib/online/supabase";
@@ -113,6 +113,7 @@ function Header({ title, onBack }: { title: string; onBack?: () => void }) {
 
 function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
   const { state, client } = useOnline();
+  const [nameError, setNameError] = useState(false);
   const [name, setName] = useState("");
   const [open, setOpen] = useState<"create" | "join" | null>(inviteCode ? "join" : null);
   const [mode, setMode] = useState<GameMode>("classic");
@@ -127,19 +128,40 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
     setMode(loadPrefs().mode);
   }, []);
 
-  const rememberName = () => {
-    try {
-      window.localStorage.setItem(NAME_KEY, name);
-    } catch {
-      // ignore
+  const getValidatedName = () => {
+    const playerName = name.trim();
+
+    if (!playerName) {
+      setNameError(true);
+      return null;
     }
-    return cleanName(name, "Player");
+
+    setNameError(false);
+    try {
+      window.localStorage.setItem(NAME_KEY, playerName);
+    } catch {
+      // Ignore storage errors.
+    }
+
+    return cleanName(playerName, "Player");
   };
+
   const toggle = (which: "create" | "join") => {
     client.clearError();
     setOpen(open === which ? null : which);
   };
-  const join = () => void client.joinRoom(code, rememberName());
+
+  const join = () => {
+    const playerName = getValidatedName();
+    if (!playerName) return;
+    void client.joinRoom(code, playerName);
+  };
+
+  const create = () => {
+    const playerName = getValidatedName();
+    if (!playerName) return;
+    void client.createRoom(playerName, mode);
+  };
 
   return (
     <Shell>
@@ -148,8 +170,22 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
 
       <label className="mt-8 block">
         <span className={`${sectionLabel} mb-2 block`}>Your name</span>
-        <input className={fieldClass} value={name} maxLength={16} placeholder="Player" onChange={(e) => setName(e.target.value)} />
+        <input
+          className={fieldClass}
+          value={name}
+          maxLength={16}
+          placeholder="Player"
+          onChange={(e) => {
+            setName(e.target.value);
+            if (e.target.value.trim()) setNameError(false);
+          }}
+        />
       </label>
+      {nameError && (
+        <p role="alert" className="mt-2 text-sm font-medium text-coral">
+          Please enter your name.
+        </p>
+      )}
 
       <div className="mt-6 space-y-3">
         <ExpandCard
@@ -177,7 +213,7 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
                 ))}
               </div>
             </div>
-            <GameButton onClick={() => void client.createRoom(rememberName(), mode)} disabled={state.busy} className="w-full">
+            <GameButton onClick={create} disabled={state.busy} className="w-full">
               {state.busy ? "Creating…" : "Create room"}
             </GameButton>
           </div>
@@ -301,6 +337,27 @@ function Closed({ room, v, onMenu, onNew }: { room: RoomRow; v: RoomView; onMenu
 function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: () => void }) {
   const { state, client } = useOnline();
   const g = room.game;
+  const [optimisticGame, setOptimisticGame] = useState<GameState | null>(null);
+  const displayGame = optimisticGame ?? g;
+
+  // Once the server supplies a new game state, discard the temporary preview.
+  useEffect(() => {
+    setOptimisticGame(null);
+  }, [g]);
+
+  const handleCell = (index: number) => {
+    if (state.busy || optimisticGame || !v.myTurn || room.status !== "playing") return;
+
+    // Show the legal move immediately using the same rules as the real game.
+    const preview = applyMove(g, index);
+    if (!preview) return;
+
+    setOptimisticGame(preview);
+    void client.playMove(index).then((accepted) => {
+      if (!accepted) setOptimisticGame(null);
+    });
+  };
+
   const finished = room.status === "finished";
   const active = room.status === "playing";
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -346,7 +403,7 @@ function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: (
   }
 
   const playing = room.status === "playing";
-  const vanishing = oldestMarkToVanish(g);
+  const vanishing = oldestMarkToVanish(displayGame);
   const oppOnline = !state.userId || !state.presence.includes(state.userId) || (v.oppId !== null && state.presence.includes(v.oppId));
   const oppSide = v.side === "host" ? "guest" : "host";
 
@@ -397,12 +454,12 @@ function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: (
 
       <div className="mt-8">
         <BoardGrid
-          board={g.board}
-          winLine={g.winLine}
-          winner={g.winner}
+          board={displayGame.board}
+          winLine={displayGame.winLine}
+          winner={displayGame.winner}
           vanishing={vanishing}
-          interactive={playing && v.myTurn && !state.busy}
-          onCell={(i) => void client.playMove(i)}
+          interactive={playing && v.myTurn && !state.busy && !optimisticGame}
+          onCell={handleCell}
         />
       </div>
 
