@@ -41,10 +41,13 @@ const randomInt = (max: number) => {
 
 /** Read the room, apply a pure rule, write with an optimistic version check (retry on races). */
 async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise<RoomResult> {
+  const mutationStartedAt = performance.now();
   for (let attempt = 0; attempt < 4; attempt++) {
     const readStartedAt = performance.now();
     const { data, error } = await admin.from("rooms").select("*").eq("code", code).maybeSingle();
-    console.info(`[rooms timing] DB read: ${Math.round(performance.now() - readStartedAt)} ms (attempt ${attempt + 1})`);
+    console.info(
+      `[rooms timing] database read attempt ${attempt + 1}: ${Math.round(performance.now() - readStartedAt)} ms`,
+    );
     if (error) throw error;
     if (!data) return { ok: false, error: "not_found" };
     const row = data as RoomRow;
@@ -60,11 +63,17 @@ async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise
       .eq("version", row.version)
       .select("*")
       .maybeSingle();
-    console.info(`[rooms timing] DB write: ${Math.round(performance.now() - writeStartedAt)} ms (attempt ${attempt + 1})`);
+    console.info(
+      `[rooms timing] database write attempt ${attempt + 1}: ${Math.round(performance.now() - writeStartedAt)} ms`,
+    );
     if (updateError) throw updateError;
-    if (updated) return { ok: true, row: updated as RoomRow };
+    if (updated) {
+      console.info(`[rooms timing] complete mutation: ${Math.round(performance.now() - mutationStartedAt)} ms`);
+      return { ok: true, row: updated as RoomRow };
+    }
     // Someone else wrote first: reload and re-validate against the fresh state.
   }
+  console.info(`[rooms timing] mutation exhausted retries: ${Math.round(performance.now() - mutationStartedAt)} ms`);
   return { ok: false, error: "conflict" };
 }
 
@@ -83,10 +92,11 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   if (req.method !== "POST") return fail("bad_request");
 
-  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const requestStartedAt = performance.now();
   const authStartedAt = performance.now();
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
   const { data: auth } = await admin.auth.getUser(token);
-  console.info(`[rooms timing] Auth check: ${Math.round(performance.now() - authStartedAt)} ms`);
+  console.info(`[rooms timing] authentication: ${Math.round(performance.now() - authStartedAt)} ms`);
   const user = auth.user;
   if (!user) return json({ ok: false, error: "unauthorized" }, 401);
 
@@ -106,8 +116,11 @@ Deno.serve(async (req) => {
     switch (body.action) {
       case "join":
         return reply(await mutate(code, (row) => joinRoom(row, user.id, body.name)));
-      case "move":
-        return reply(await mutate(code, (row) => makeMove(row, user.id, body.index)));
+      case "move": {
+        const result = await mutate(code, (row) => makeMove(row, user.id, body.index));
+        console.info(`[rooms timing] total move request before response: ${Math.round(performance.now() - requestStartedAt)} ms`);
+        return reply(result);
+      }
       case "rematch":
         return reply(await mutate(code, (row) => requestRematch(row, user.id)));
       case "leave":
