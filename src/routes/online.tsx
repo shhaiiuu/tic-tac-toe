@@ -112,7 +112,7 @@ function Header({ title, onBack }: { title: string; onBack?: () => void }) {
 
 function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
   const { state, client } = useOnline();
-  const [name, setName] = useState("");
+  const [nameError, setNameError] = useState("");
   const [open, setOpen] = useState<"create" | "join" | null>(inviteCode ? "join" : null);
   const [mode, setMode] = useState<GameMode>("classic");
   const [code, setCode] = useState(() => cleanCode(inviteCode ?? ""));
@@ -126,29 +126,75 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
     setMode(loadPrefs().mode);
   }, []);
 
-  const rememberName = () => {
-    try {
-      window.localStorage.setItem(NAME_KEY, name);
-    } catch {
-      // ignore
+  
+  // Validate the name before either creating or joining a room.
+  const rememberName = (): string | null => {
+    const cleaned = cleanName(name, "");
+
+    if (!cleaned.trim()) {
+      setNameError("Please enter your name.");
+      return null;
     }
-    return cleanName(name, "Player");
+
+    setNameError("");
+
+    try {
+      window.localStorage.setItem(NAME_KEY, cleaned);
+    } catch {
+      // Ignore storage errors; the current session can still proceed.
+    }
+
+    return cleaned;
   };
+
   const toggle = (which: "create" | "join") => {
     client.clearError();
+    setNameError("");
     setOpen(open === which ? null : which);
   };
-  const join = () => void client.joinRoom(code, rememberName());
+
+  const create = () => {
+    const playerName = rememberName();
+    if (!playerName) return;
+
+    void client.createRoom(playerName, mode);
+  };
+
+  const join = () => {
+    const playerName = rememberName();
+    if (!playerName) return;
+
+    void client.joinRoom(code, playerName);
+  };
+
 
   return (
     <Shell>
       <Header title="Play Online" />
       <p className="mt-6 text-center text-muted-foreground">Play a friend on another device. Create a room and share the code, or join theirs.</p>
 
-      <label className="mt-8 block">
-        <span className={`${sectionLabel} mb-2 block`}>Your name</span>
-        <input className={fieldClass} value={name} maxLength={16} placeholder="Player" onChange={(e) => setName(e.target.value)} />
-      </label>
+      
+  <label className="mt-8 block">
+    <span className={`${sectionLabel} mb-2 block`}>Your name</span>
+    <input
+      className={fieldClass}
+      value={name}
+      maxLength={16}
+      placeholder="Enter your name"
+      aria-invalid={Boolean(nameError)}
+      aria-describedby={nameError ? "online-name-error" : undefined}
+      onChange={(e) => {
+        setName(e.target.value);
+        if (e.target.value.trim()) setNameError("");
+      }}
+    />
+    {nameError && (
+      <p id="online-name-error" role="alert" className="mt-2 text-sm font-medium text-coral">
+        {nameError}
+      </p>
+    )}
+  </label>
+
 
       <div className="mt-6 space-y-3">
         <ExpandCard
@@ -176,7 +222,7 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
                 ))}
               </div>
             </div>
-            <GameButton onClick={() => void client.createRoom(rememberName(), mode)} disabled={state.busy} className="w-full">
+            <GameButton onClick={create} disabled={state.busy} className="w-full">
               {state.busy ? "Creating…" : "Create room"}
             </GameButton>
           </div>
