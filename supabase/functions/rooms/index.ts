@@ -80,13 +80,9 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return fail("bad_request");
 
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  // Verify the JWT locally using Supabase Auth's cached JWKS instead of making
-  // a separate network request to Auth for every move.
-  const { data: verified, error: verifyError } = await admin.auth.getClaims(token);
-  const userId = verified?.claims?.sub;
-  if (verifyError || typeof userId !== "string" || userId.length === 0) {
-    return json({ ok: false, error: "unauthorized" }, 401);
-  }
+  const { data: auth } = await admin.auth.getUser(token);
+  const user = auth.user;
+  if (!user) return json({ ok: false, error: "unauthorized" }, 401);
 
   let body: Record<string, unknown>;
   try {
@@ -96,20 +92,20 @@ Deno.serve(async (req) => {
   }
 
   try {
-    if (body.action === "create") return reply(await createRoom(userId, body.name, body.mode));
+    if (body.action === "create") return reply(await createRoom(user.id, body.name, body.mode));
 
     const code = normalizeCode(body.code);
     if (!code) return fail("invalid_code");
 
     switch (body.action) {
       case "join":
-        return reply(await mutate(code, (row) => joinRoom(row, userId, body.name)));
+        return reply(await mutate(code, (row) => joinRoom(row, user.id, body.name)));
       case "move":
-        return reply(await mutate(code, (row) => makeMove(row, userId, body.index)));
+        return reply(await mutate(code, (row) => makeMove(row, user.id, body.index)));
       case "rematch":
-        return reply(await mutate(code, (row) => requestRematch(row, userId)));
+        return reply(await mutate(code, (row) => requestRematch(row, user.id)));
       case "leave":
-        return reply(await mutate(code, (row) => leaveRoom(row, userId)));
+        return reply(await mutate(code, (row) => leaveRoom(row, user.id)));
       default:
         return fail("bad_request");
     }
