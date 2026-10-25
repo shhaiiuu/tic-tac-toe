@@ -33,6 +33,7 @@ export function StatusPill({
 export const pillTone = (symbol: PlayerSymbol | null) =>
   symbol === "X" ? "bg-primary-soft text-primary" : symbol === "O" ? "bg-coral-soft text-coral" : "bg-muted text-muted-foreground";
 
+
 export function PlayerCard({
   name,
   symbol,
@@ -46,21 +47,32 @@ export function PlayerCard({
   score: number;
   active: boolean;
   bot?: boolean;
-  /** Optional small line under the name (e.g. "Offline"). */
   status?: ReactNode;
 }) {
   return (
     <div
       className={cn(
-        "rounded-3xl bg-card border p-4 text-center transition-all",
-        active ? cn("shadow-lift ring-2", symbol === "X" ? "ring-primary/30" : "ring-coral/30") : "shadow-soft opacity-80",
+        "flex min-w-0 min-h-[172px] w-full flex-col items-center justify-center rounded-3xl border bg-card p-4 text-center transition-all",
+        active
+          ? cn(
+              "shadow-lift ring-2",
+              symbol === "X" ? "ring-primary/30" : "ring-coral/30",
+            )
+          : "shadow-soft opacity-80",
       )}
     >
-      <div className="mx-auto size-10 grid place-items-center rounded-full bg-muted text-muted-foreground">
+      <div className="mx-auto grid size-10 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
         {bot ? <Bot className="size-5" /> : <User className="size-5" />}
       </div>
-      <div className="mt-2 truncate font-display font-semibold">{name}</div>
-      {status && <div className="text-xs text-muted-foreground">{status}</div>}
+
+      <div className="mt-2 w-full truncate font-display font-semibold">
+        {name}
+      </div>
+
+      {status && (
+        <div className="text-xs text-muted-foreground"></div>
+      )}
+
       <div className="mt-1 flex items-center justify-center gap-1.5 text-sm text-muted-foreground">
         <Mark symbol={symbol} className="size-4" />
         <span className="font-semibold text-foreground">{score}</span>
@@ -68,6 +80,7 @@ export function PlayerCard({
     </div>
   );
 }
+
 
 /** The 3×3 grid. `interactive` = the local player may tap empty cells right now. */
 export function BoardGrid({
