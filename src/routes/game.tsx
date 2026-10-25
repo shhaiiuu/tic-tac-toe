@@ -33,7 +33,7 @@ export const Route = createFileRoute("/game")({
 });
 
 /** How long the finished board (with the winning line) stays visible before the result screen. */
-const RESULT_DELAY_MS = 250;
+const RESULT_DELAY_MS = 150;
 
 function Game() {
   const session = useSession();
