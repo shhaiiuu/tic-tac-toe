@@ -1,6 +1,4 @@
-// Edge Function `rooms` — the trusted backend for online play.
-// Runs with the service-role key (provided by Supabase to Edge Functions as a secret
-// environment variable). That key never reaches the browser.
+
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   buildNewRoom,
@@ -21,12 +19,9 @@ const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  // Lets browser tooling read the diagnostics below.
   "Access-Control-Expose-Headers": "server-timing, x-request-id, x-rooms-build",
 };
 
-// Domain errors are returned with HTTP 200 + { ok: false, error } so the client can show
-// friendly messages; only auth/server failures use non-2xx statuses.
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 const reply = (r: RoomResult) => json(r.ok ? { ok: true, room: r.row } : { ok: false, error: r.error });
@@ -36,7 +31,6 @@ const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// --- diagnostics: which build is live, where it runs, and whether this request was a cold start ---
 const bootedAt = Date.now();
 const region = Deno.env.get("SB_REGION") ?? Deno.env.get("DENO_REGION") ?? "unknown";
 let served = 0;
@@ -50,17 +44,12 @@ const randomInt = (max: number) => {
 
 type RoomRead = { data: RoomRow | null; error: unknown };
 
-/** One database read of the room (timed as "db_read"). */
 const readRoom = (code: string, t: Timer): Promise<RoomRead> =>
   t.span("db_read", async () => {
     const { data, error } = await admin.from("rooms").select("*").eq("code", code).maybeSingle();
     return { data: data as RoomRow | null, error };
   });
 
-/**
- * Read the room, apply a pure rule, write with an optimistic version check (retry on races).
- * `firstRead` is the read for attempt 1, started earlier so it overlaps with authentication.
- */
 async function mutate(
   code: string,
   rule: (row: RoomRow) => RoomResult,
@@ -89,7 +78,6 @@ async function mutate(
     );
     if (updateError) throw updateError;
     if (updated) return { ok: true, row: updated as RoomRow };
-    // Someone else wrote first: reload and re-validate against the fresh state.
   }
   return { ok: false, error: "conflict" };
 }
@@ -101,7 +89,7 @@ async function createRoom(userId: string, name: unknown, mode: unknown, t: Timer
     if (!room) return { ok: false, error: "bad_request" };
     const { data, error } = await t.span("db_write", async () => admin.from("rooms").insert(room).select("*").single());
     if (!error) return { ok: true, row: data as RoomRow };
-    if (error.code !== "23505") throw error; // not a duplicate code -> real failure
+    if (error.code !== "23505") throw error; 
   }
   return { ok: false, error: "conflict" };
 }
@@ -114,7 +102,6 @@ interface Outcome {
 }
 
 async function handle(req: Request, t: Timer, out: Outcome): Promise<Response> {
-  // Wrap responses so the outcome (ok / error code) is logged without touching response shapes.
   const done = (r: RoomResult) => {
     out.ok = r.ok;
     out.error = r.ok ? null : r.error;
@@ -128,10 +115,6 @@ async function handle(req: Request, t: Timer, out: Outcome): Promise<Response> {
   if (req.method !== "POST") return failed("bad_request");
 
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-
-  // The body is parsed first (local, instant) so the room read can start immediately and run
-  // IN PARALLEL with authentication instead of after it. The read result is not used unless the
-  // caller is authenticated, and every check below still happens in the original order.
   let body: Record<string, unknown> | null = null;
   try {
     body = await req.json();
@@ -143,7 +126,7 @@ async function handle(req: Request, t: Timer, out: Outcome): Promise<Response> {
 
   const code = body && action !== "create" ? normalizeCode(body["code"]) : null;
   const firstRead = code ? readRoom(code, t) : null;
-  firstRead?.catch(() => undefined); // never an unhandled rejection if we bail out before using it
+  firstRead?.catch(() => undefined); 
 
   const { data: auth } = await t.span("auth", () => admin.auth.getUser(token));
   const user = auth.user;
