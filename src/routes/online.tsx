@@ -5,14 +5,13 @@ import { BoardGrid, PlayerCard, pillTone, ResultCard, StatusPill } from "@/compo
 import { ExitConfirmationModal } from "@/components/game/exit-confirmation-modal";
 import { ExpandCard, GameButton, ModeOption, Shell } from "@/components/game/ui";
 import { cleanName, loadPrefs, MODE_INFO } from "@/lib/game/config";
-import { applyMove, oldestMarkToVanish } from "@/lib/game/engine";
-import type { GameMode, GameState } from "@/lib/game/types";
+import { oldestMarkToVanish } from "@/lib/game/engine";
+import type { GameMode } from "@/lib/game/types";
 import { copyText } from "@/lib/online/clipboard";
 import { useOnline } from "@/lib/online/hooks";
 import { isOnlineConfigured } from "@/lib/online/supabase";
 import type { RoomRow } from "@/lib/online/transport";
 import { describeOnlineResult, viewRoom, type RoomView } from "@/lib/online/view";
-
 
 export const Route = createFileRoute("/online")({
   validateSearch: (search: Record<string, unknown>): { code?: string } =>
@@ -31,7 +30,7 @@ export const Route = createFileRoute("/online")({
 });
 
 const NAME_KEY = "tic-tac-toe:online:name";
-const RESULT_DELAY_MS = 150;
+const RESULT_DELAY_MS = 450;
 const sectionLabel = "text-xs font-semibold uppercase tracking-widest text-muted-foreground";
 const fieldClass =
   "h-12 w-full rounded-2xl border bg-card px-4 text-base shadow-soft placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -69,7 +68,7 @@ function Online() {
 
 function SetupNeeded() {
   const steps = [
-    "Create a Supabase project  and copy its URL and publishable (anon) key.",
+    "Create a Supabase project (or enable Lovable Cloud) and copy its URL and publishable (anon) key.",
     "Run supabase/migrations/20261025000000_online_rooms.sql in the SQL editor (creates the rooms table, security policies and Realtime).",
     "Enable Authentication → Providers → Anonymous sign-ins.",
     "Deploy the game server: supabase functions deploy rooms",
@@ -113,7 +112,6 @@ function Header({ title, onBack }: { title: string; onBack?: () => void }) {
 
 function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
   const { state, client } = useOnline();
-  const [nameError, setNameError] = useState(false);
   const [name, setName] = useState("");
   const [open, setOpen] = useState<"create" | "join" | null>(inviteCode ? "join" : null);
   const [mode, setMode] = useState<GameMode>("classic");
@@ -128,40 +126,19 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
     setMode(loadPrefs().mode);
   }, []);
 
-  const getValidatedName = () => {
-    const playerName = name.trim();
-
-    if (!playerName) {
-      setNameError(true);
-      return null;
-    }
-
-    setNameError(false);
+  const rememberName = () => {
     try {
-      window.localStorage.setItem(NAME_KEY, playerName);
+      window.localStorage.setItem(NAME_KEY, name);
     } catch {
-      // Ignore storage errors.
+      // ignore
     }
-
-    return cleanName(playerName, "Player");
+    return cleanName(name, "Player");
   };
-
   const toggle = (which: "create" | "join") => {
     client.clearError();
     setOpen(open === which ? null : which);
   };
-
-  const join = () => {
-    const playerName = getValidatedName();
-    if (!playerName) return;
-    void client.joinRoom(code, playerName);
-  };
-
-  const create = () => {
-    const playerName = getValidatedName();
-    if (!playerName) return;
-    void client.createRoom(playerName, mode);
-  };
+  const join = () => void client.joinRoom(code, rememberName());
 
   return (
     <Shell>
@@ -170,22 +147,8 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
 
       <label className="mt-8 block">
         <span className={`${sectionLabel} mb-2 block`}>Your name</span>
-        <input
-          className={fieldClass}
-          value={name}
-          maxLength={16}
-          placeholder="Player"
-          onChange={(e) => {
-            setName(e.target.value);
-            if (e.target.value.trim()) setNameError(false);
-          }}
-        />
+        <input className={fieldClass} value={name} maxLength={16} placeholder="Player" onChange={(e) => setName(e.target.value)} />
       </label>
-      {nameError && (
-        <p role="alert" className="mt-2 text-sm font-medium text-coral">
-          Please enter your name.
-        </p>
-      )}
 
       <div className="mt-6 space-y-3">
         <ExpandCard
@@ -213,7 +176,7 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
                 ))}
               </div>
             </div>
-            <GameButton onClick={create} disabled={state.busy} className="w-full">
+            <GameButton onClick={() => void client.createRoom(rememberName(), mode)} disabled={state.busy} className="w-full">
               {state.busy ? "Creating…" : "Create room"}
             </GameButton>
           </div>
@@ -337,28 +300,8 @@ function Closed({ room, v, onMenu, onNew }: { room: RoomRow; v: RoomView; onMenu
 function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: () => void }) {
   const { state, client } = useOnline();
   const g = room.game;
-  const [optimisticGame, setOptimisticGame] = useState<GameState | null>(null);
-  const displayGame = optimisticGame ?? g;
-
-  // Once the server supplies a new game state, discard the temporary preview.
-  useEffect(() => {
-    setOptimisticGame(null);
-  }, [g]);
-
-  const handleCell = (index: number) => {
-    if (state.busy || optimisticGame || !v.myTurn || room.status !== "playing") return;
-
-    // Show the legal move immediately using the same rules as the real game.
-    const preview = applyMove(g, index);
-    if (!preview) return;
-
-    setOptimisticGame(preview);
-    void client.playMove(index).then((accepted) => {
-      if (!accepted) setOptimisticGame(null);
-    });
-  };
-
   const finished = room.status === "finished";
+  // Leaving a live match closes the room for the opponent too, so ask first. Not needed once it has ended.
   const active = room.status === "playing";
   const [confirmLeave, setConfirmLeave] = useState(false);
   useEffect(() => {
@@ -403,7 +346,7 @@ function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: (
   }
 
   const playing = room.status === "playing";
-  const vanishing = oldestMarkToVanish(displayGame);
+  const vanishing = oldestMarkToVanish(g);
   const oppOnline = !state.userId || !state.presence.includes(state.userId) || (v.oppId !== null && state.presence.includes(v.oppId));
   const oppSide = v.side === "host" ? "guest" : "host";
 
@@ -454,12 +397,12 @@ function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: (
 
       <div className="mt-8">
         <BoardGrid
-          board={displayGame.board}
-          winLine={displayGame.winLine}
-          winner={displayGame.winner}
+          board={g.board}
+          winLine={g.winLine}
+          winner={g.winner}
           vanishing={vanishing}
-          interactive={playing && v.myTurn && !state.busy && !optimisticGame}
-          onCell={handleCell}
+          interactive={playing && v.myTurn && !state.busy}
+          onCell={(i) => void client.playMove(i)}
         />
       </div>
 
@@ -472,8 +415,9 @@ function OnlineGame({ room, v, onMenu }: { room: RoomRow; v: RoomView; onMenu: (
         <span className="rounded-full bg-muted px-3 py-1 font-semibold text-muted-foreground">Room {room.code} · Round {room.round}</span>
       </div>
 
-      <div className="mt-6"><GameButton variant="soft" className="w-full" onClick={onMenu}><ArrowLeft className="size-4" /> onClick</GameButton></div>
-        <ExitConfirmationModal open={confirmLeave && active} onStay={() => setConfirmLeave(false)} onLeave={onMenu} />
+      <div className="mt-6"><GameButton variant="soft" className="w-full" onClick={() => (active ? setConfirmLeave(true) : onMenu())}><ArrowLeft className="size-4" /> Leave room</GameButton></div>
+
+      <ExitConfirmationModal open={confirmLeave && active} onStay={() => setConfirmLeave(false)} onLeave={onMenu} />
     </Shell>
   );
 }
