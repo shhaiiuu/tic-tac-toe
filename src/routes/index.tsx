@@ -221,7 +221,7 @@ function Home() {
             <span className="size-14 grid place-items-center rounded-2xl bg-muted text-foreground"><Globe className="size-6" /></span>
             <span className="flex-1">
               <span className="block font-display text-xl font-semibold">Play Online</span>
-              <span className="block text-sm text-muted-foreground">Race a friend on another device</span>
+              <span className="block text-sm text-muted-foreground">Play with friends over the internet</span>
             </span>
             <ChevronRight className="size-5 text-muted-foreground transition-transform group-hover:translate-x-1" />
           </Link>

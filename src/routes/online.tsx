@@ -112,7 +112,8 @@ function Header({ title, onBack }: { title: string; onBack?: () => void }) {
 
 function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
   const { state, client } = useOnline();
-  const [nameError, setNameError] = useState("");
+  const [name, setName] = useState("");
+  const [nameError, setNameError] = useState(false);
   const [open, setOpen] = useState<"create" | "join" | null>(inviteCode ? "join" : null);
   const [mode, setMode] = useState<GameMode>("classic");
   const [code, setCode] = useState(() => cleanCode(inviteCode ?? ""));
@@ -121,80 +122,83 @@ function Lobby({ inviteCode }: { inviteCode: string | undefined }) {
     try {
       setName(window.localStorage.getItem(NAME_KEY) ?? "");
     } catch {
-      // ignore
+      // Ignore storage errors; the user can still enter a name.
     }
     setMode(loadPrefs().mode);
   }, []);
 
-  
-  // Validate the name before either creating or joining a room.
-  const rememberName = (): string | null => {
-    const cleaned = cleanName(name, "");
+  // Validate the name before either room action. Never silently substitute "Player".
+  const getValidatedName = (): string | null => {
+    const cleaned = name
+      // Remove control characters, normalize whitespace, and trim the result.
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 16);
 
-    if (!cleaned.trim()) {
-      setNameError("Please enter your name.");
+    if (!cleaned) {
+      setNameError(true);
       return null;
     }
 
-    setNameError("");
-
+    setNameError(false);
     try {
       window.localStorage.setItem(NAME_KEY, cleaned);
     } catch {
       // Ignore storage errors; the current session can still proceed.
     }
 
-    return cleaned;
+    return cleanName(cleaned, "");
   };
 
   const toggle = (which: "create" | "join") => {
     client.clearError();
-    setNameError("");
+    setNameError(false);
     setOpen(open === which ? null : which);
   };
 
   const create = () => {
-    const playerName = rememberName();
+    const playerName = getValidatedName();
     if (!playerName) return;
-
     void client.createRoom(playerName, mode);
   };
 
   const join = () => {
-    const playerName = rememberName();
+    const playerName = getValidatedName();
     if (!playerName) return;
-
     void client.joinRoom(code, playerName);
   };
-
 
   return (
     <Shell>
       <Header title="Play Online" />
-      <p className="mt-6 text-center text-muted-foreground">Play a friend on another device. Create a room and share the code, or join theirs.</p>
+      <p className="mt-6 text-center text-muted-foreground">Want to play with a friend? Create a room and send them the code, or enter their code to join.</p>
 
-      
-  <label className="mt-8 block">
-    <span className={`${sectionLabel} mb-2 block`}>Your name</span>
-    <input
-      className={fieldClass}
-      value={name}
-      maxLength={16}
-      placeholder="Enter your name"
-      aria-invalid={Boolean(nameError)}
-      aria-describedby={nameError ? "online-name-error" : undefined}
-      onChange={(e) => {
-        setName(e.target.value);
-        if (e.target.value.trim()) setNameError("");
-      }}
-    />
-    {nameError && (
-      <p id="online-name-error" role="alert" className="mt-2 text-sm font-medium text-coral">
-        {nameError}
-      </p>
-    )}
-  </label>
-
+      <label className="mt-8 block">
+        <span className={`${sectionLabel} mb-2 block`}>Your name</span>
+        <input
+          type="text"
+          name="playerName"
+          autoComplete="name"
+          autoCapitalize="words"
+          spellCheck={false}
+          className={fieldClass}
+          value={name}
+          maxLength={16}
+          placeholder="Enter your name"
+          aria-invalid={nameError}
+          aria-describedby={nameError ? "online-name-error" : undefined}
+          onChange={(e) => {
+            setName(e.target.value);
+            if (e.target.value.trim()) setNameError(false);
+          }}
+        />
+      </label>
+      {nameError && (
+        <p id="online-name-error" role="alert" className="mt-2 text-sm font-medium text-coral">
+          Please enter your name.
+        </p>
+      )}
 
       <div className="mt-6 space-y-3">
         <ExpandCard
