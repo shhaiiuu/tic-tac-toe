@@ -19,13 +19,13 @@ secret). The browser only ever has the public URL and publishable/anon key.
 
 ## Setup
 
-1. **Project** – create a Supabase project (or enable Lovable Cloud / the Supabase integration).
+1. **Project** – create a Supabase project.
 2. **Database** – run `migrations/20261025000000_online_rooms.sql` in the SQL editor
    (or `supabase db push`).
 3. **Auth** – Dashboard → Authentication → Providers → enable **Anonymous sign-ins**.
 4. **Server** – `supabase functions deploy rooms` (JWT verification stays on, the default).
 5. **Frontend env** – copy `.env.example` to `.env.local` and set `VITE_SUPABASE_URL` and
-   `VITE_SUPABASE_PUBLISHABLE_KEY` (Lovable fills these in automatically). Restart `bun run dev`.
+   `VITE_SUPABASE_PUBLISHABLE_KEY` . Restart `bun run dev`.
 6. `bun install` (adds `@supabase/supabase-js`).
 
 Optional: schedule the cleanup query at the bottom of the migration to delete old rooms.
