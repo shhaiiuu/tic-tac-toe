@@ -3,6 +3,7 @@ import { ArrowLeft, Check, Copy, Grid3x3, Home, Hourglass, Link2, LogIn, Plus, R
 import { useEffect, useState } from "react";
 import { BoardGrid, PlayerCard, pillTone, ResultCard, StatusPill } from "@/components/game/board";
 import { ExitConfirmationModal } from "@/components/game/exit-confirmation-modal";
+import { FloatingChat } from "@/components/chat/floating-chat";
 import { ExpandCard, GameButton, ModeOption, Shell } from "@/components/game/ui";
 import { cleanName, loadPrefs, MODE_INFO } from "@/lib/game/config";
 import { oldestMarkToVanish } from "@/lib/game/engine";
@@ -61,8 +62,20 @@ function Online() {
   const v = viewRoom(room, state.userId);
   if (!v) return <Lobby inviteCode={inviteCode} />;
   if (room.status === "abandoned") return <Closed room={room} v={v} onMenu={leaveToMenu} onNew={() => void client.leave()} />;
-  return <OnlineGame room={room} v={v} onMenu={leaveToMenu} />;
-}
+  return (
+  <>
+    <OnlineGame room={room} v={v} onMenu={leaveToMenu} />
+    {state.userId && (
+      <FloatingChat
+        roomId={room.id}
+        userId={state.userId}
+        myName={v.myName}
+        opponentName={v.oppName}
+      />
+    )}
+  </>
+);}
+
 
 /* ------------------------------ Not configured ------------------------------ */
 
