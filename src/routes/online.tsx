@@ -31,7 +31,7 @@ export const Route = createFileRoute("/online")({
 });
 
 const NAME_KEY = "tic-tac-toe:online:name";
-const RESULT_DELAY_MS = 1100;
+const RESULT_DELAY_MS = 250;
 const sectionLabel = "text-xs font-semibold uppercase tracking-widest text-muted-foreground";
 const fieldClass =
   "h-12 w-full rounded-2xl border bg-card px-4 text-base shadow-soft placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
