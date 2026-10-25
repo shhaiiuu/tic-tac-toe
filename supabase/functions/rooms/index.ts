@@ -128,12 +128,22 @@ async function handle(req: Request, t: Timer, out: Outcome): Promise<Response> {
   const firstRead = code ? readRoom(code, t) : null;
   firstRead?.catch(() => undefined); 
 
-  const { data: auth } = await t.span("auth", () => admin.auth.getUser(token));
-  const user = auth.user;
-  if (!user) {
+  // Verify the JWT using the project's asymmetric signing key.
+  // getClaims() can avoid a network request to the Auth service.
+  const { data: claimsData, error: claimsError } = await t.span(
+    "auth",
+    () => admin.auth.getClaims(token),
+  );
+
+  const userId = claimsData?.claims?.sub;
+
+  if (claimsError || typeof userId !== "string" || !userId) {
     out.error = "unauthorized";
     return json({ ok: false, error: "unauthorized" }, 401);
   }
+
+  // Use the verified user ID for room authorization checks.
+  const user = { id: userId };
 
   if (!body) return failed("bad_request");
 
