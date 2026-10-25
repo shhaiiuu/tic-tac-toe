@@ -147,7 +147,7 @@ function Home() {
             open={open === "computer"}
             onToggle={() => setOpen(open === "computer" ? null : "computer")}
             icon={<Bot className="size-6" />}
-            title="Play vs Computer"
+            title="You vs Computer"
             desc="Sharpen your skills solo"
             tone="bg-primary-soft text-primary"
           >
