@@ -69,7 +69,7 @@ function Online() {
 
 function SetupNeeded() {
   const steps = [
-    "Create a Supabase project (or enable Lovable Cloud) and copy its URL and publishable (anon) key.",
+    "Create a Supabase project  and copy its URL and publishable (anon) key.",
     "Run supabase/migrations/20261025000000_online_rooms.sql in the SQL editor (creates the rooms table, security policies and Realtime).",
     "Enable Authentication → Providers → Anonymous sign-ins.",
     "Deploy the game server: supabase functions deploy rooms",
