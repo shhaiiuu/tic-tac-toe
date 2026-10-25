@@ -41,13 +41,8 @@ const randomInt = (max: number) => {
 
 /** Read the room, apply a pure rule, write with an optimistic version check (retry on races). */
 async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise<RoomResult> {
-  const mutationStartedAt = performance.now();
   for (let attempt = 0; attempt < 4; attempt++) {
-    const readStartedAt = performance.now();
     const { data, error } = await admin.from("rooms").select("*").eq("code", code).maybeSingle();
-    console.info(
-      `[rooms timing] database read attempt ${attempt + 1}: ${Math.round(performance.now() - readStartedAt)} ms`,
-    );
     if (error) throw error;
     if (!data) return { ok: false, error: "not_found" };
     const row = data as RoomRow;
@@ -55,7 +50,6 @@ async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise
     const result = rule(row);
     if (!result.ok || result.row === row) return result; // rejected, or nothing to write
 
-    const writeStartedAt = performance.now();
     const { data: updated, error: updateError } = await admin
       .from("rooms")
       .update({ ...writableColumns(result.row), version: row.version + 1, updated_at: new Date().toISOString() })
@@ -63,17 +57,10 @@ async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise
       .eq("version", row.version)
       .select("*")
       .maybeSingle();
-    console.info(
-      `[rooms timing] database write attempt ${attempt + 1}: ${Math.round(performance.now() - writeStartedAt)} ms`,
-    );
     if (updateError) throw updateError;
-    if (updated) {
-      console.info(`[rooms timing] complete mutation: ${Math.round(performance.now() - mutationStartedAt)} ms`);
-      return { ok: true, row: updated as RoomRow };
-    }
+    if (updated) return { ok: true, row: updated as RoomRow };
     // Someone else wrote first: reload and re-validate against the fresh state.
   }
-  console.info(`[rooms timing] mutation exhausted retries: ${Math.round(performance.now() - mutationStartedAt)} ms`);
   return { ok: false, error: "conflict" };
 }
 
@@ -92,13 +79,14 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   if (req.method !== "POST") return fail("bad_request");
 
-  const requestStartedAt = performance.now();
-  const authStartedAt = performance.now();
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  const { data: auth } = await admin.auth.getUser(token);
-  console.info(`[rooms timing] authentication: ${Math.round(performance.now() - authStartedAt)} ms`);
-  const user = auth.user;
-  if (!user) return json({ ok: false, error: "unauthorized" }, 401);
+  // Verify the JWT locally using Supabase Auth's cached JWKS instead of making
+  // a separate network request to Auth for every move.
+  const { data: verified, error: verifyError } = await admin.auth.getClaims(token);
+  const userId = verified?.claims?.sub;
+  if (verifyError || typeof userId !== "string" || userId.length === 0) {
+    return json({ ok: false, error: "unauthorized" }, 401);
+  }
 
   let body: Record<string, unknown>;
   try {
@@ -108,23 +96,20 @@ Deno.serve(async (req) => {
   }
 
   try {
-    if (body.action === "create") return reply(await createRoom(user.id, body.name, body.mode));
+    if (body.action === "create") return reply(await createRoom(userId, body.name, body.mode));
 
     const code = normalizeCode(body.code);
     if (!code) return fail("invalid_code");
 
     switch (body.action) {
       case "join":
-        return reply(await mutate(code, (row) => joinRoom(row, user.id, body.name)));
-      case "move": {
-        const result = await mutate(code, (row) => makeMove(row, user.id, body.index));
-        console.info(`[rooms timing] total move request before response: ${Math.round(performance.now() - requestStartedAt)} ms`);
-        return reply(result);
-      }
+        return reply(await mutate(code, (row) => joinRoom(row, userId, body.name)));
+      case "move":
+        return reply(await mutate(code, (row) => makeMove(row, userId, body.index)));
       case "rematch":
-        return reply(await mutate(code, (row) => requestRematch(row, user.id)));
+        return reply(await mutate(code, (row) => requestRematch(row, userId)));
       case "leave":
-        return reply(await mutate(code, (row) => leaveRoom(row, user.id)));
+        return reply(await mutate(code, (row) => leaveRoom(row, userId)));
       default:
         return fail("bad_request");
     }
