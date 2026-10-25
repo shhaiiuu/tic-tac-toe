@@ -34,7 +34,7 @@ export function createSupabaseTransport(): Transport {
 
     async call(action: RoomAction): Promise<CallResult> {
       const startedAt = performance.now();
-      const { data, error } = await getClient().functions.invoke("rooms", { body: action, region: "ap-northeast-1", });
+      const { data, error } = await getClient().functions.invoke("rooms", { body: action,});
       console.info(
         `[online timing] Edge Function ${action.action}: ${Math.round(performance.now() - startedAt)} ms`,
       );
