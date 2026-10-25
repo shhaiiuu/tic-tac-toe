@@ -42,7 +42,9 @@ const randomInt = (max: number) => {
 /** Read the room, apply a pure rule, write with an optimistic version check (retry on races). */
 async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise<RoomResult> {
   for (let attempt = 0; attempt < 4; attempt++) {
+    const readStartedAt = performance.now();
     const { data, error } = await admin.from("rooms").select("*").eq("code", code).maybeSingle();
+    console.info(`[rooms timing] DB read: ${Math.round(performance.now() - readStartedAt)} ms (attempt ${attempt + 1})`);
     if (error) throw error;
     if (!data) return { ok: false, error: "not_found" };
     const row = data as RoomRow;
@@ -50,6 +52,7 @@ async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise
     const result = rule(row);
     if (!result.ok || result.row === row) return result; // rejected, or nothing to write
 
+    const writeStartedAt = performance.now();
     const { data: updated, error: updateError } = await admin
       .from("rooms")
       .update({ ...writableColumns(result.row), version: row.version + 1, updated_at: new Date().toISOString() })
@@ -57,6 +60,7 @@ async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise
       .eq("version", row.version)
       .select("*")
       .maybeSingle();
+    console.info(`[rooms timing] DB write: ${Math.round(performance.now() - writeStartedAt)} ms (attempt ${attempt + 1})`);
     if (updateError) throw updateError;
     if (updated) return { ok: true, row: updated as RoomRow };
     // Someone else wrote first: reload and re-validate against the fresh state.
@@ -80,7 +84,9 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return fail("bad_request");
 
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const authStartedAt = performance.now();
   const { data: auth } = await admin.auth.getUser(token);
+  console.info(`[rooms timing] Auth check: ${Math.round(performance.now() - authStartedAt)} ms`);
   const user = auth.user;
   if (!user) return json({ ok: false, error: "unauthorized" }, 401);
 

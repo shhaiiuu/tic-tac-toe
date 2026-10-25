@@ -33,7 +33,11 @@ export function createSupabaseTransport(): Transport {
     },
 
     async call(action: RoomAction): Promise<CallResult> {
+      const startedAt = performance.now();
       const { data, error } = await getClient().functions.invoke("rooms", { body: action });
+      console.info(
+        `[online timing] Edge Function ${action.action}: ${Math.round(performance.now() - startedAt)} ms`,
+      );
       if (error) {
         const status = (error as { context?: { status?: number } }).context?.status;
         if (status === 404) throw new TransportError("not_deployed");
@@ -54,8 +58,14 @@ export function createSupabaseTransport(): Transport {
       const channel = sb.channel(`room:${code}`, { config: { presence: { key: userId } } });
       channel
         .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `code=eq.${code}` }, (payload) => {
+          const receivedAt = performance.now();
           const row = payload.new as unknown as RoomRow | Record<string, never>;
-          if ("id" in row) handlers.onRow(row);
+          if ("id" in row) {
+            console.info(
+              `[online timing] Realtime row received: version ${"version" in row ? row.version : "unknown"} (${Math.round(receivedAt)} ms since page navigation)`,
+            );
+            handlers.onRow(row);
+          }
         })
         .on("presence", { event: "sync" }, () => handlers.onPresence(Object.keys(channel.presenceState())))
         .subscribe((status) => {
