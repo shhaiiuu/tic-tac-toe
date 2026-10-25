@@ -132,16 +132,47 @@ const ok = (row: RoomRow): RoomResult => ({ ok: true, row });
  * Join a room. Members calling join again (page refresh, reconnect) get their room back
  * unchanged. A third person gets "room_full".
  */
-export function joinRoom(row: RoomRow, userId: string, name: unknown, now = Date.now()): RoomResult {
-  if (sideOf(row, userId)) return row.status === "abandoned" ? fail("room_closed") : ok(row);
+
+/** Join a room. Existing members can reconnect without resending their name. */
+export function joinRoom(
+  row: RoomRow,
+  userId: string,
+  name: unknown,
+  now = Date.now(),
+): RoomResult {
+  // Allow an existing member to reconnect without needing to submit a name again.
+  if (sideOf(row, userId)) {
+    return row.status === "abandoned" ? fail("room_closed") : ok(row);
+  }
+
   if (row.status === "abandoned") return fail("room_closed");
   if (now - Date.parse(row.created_at) > ROOM_TTL_MS) return fail("expired");
   if (row.guest_id !== null || row.status !== "waiting") return fail("room_full");
 
-  let guestName = sanitizeName(name, "Player 2");
-  if (guestName.toLowerCase() === row.host_name.toLowerCase()) guestName = `${guestName} 2`.slice(0, MAX_NAME_LENGTH + 2);
-  return ok({ ...row, guest_id: userId, guest_name: guestName, status: "playing" });
+  // Require a real name for a new guest. Do not silently use "Player 2".
+  if (typeof name !== "string" || !name.trim()) {
+    return fail("bad_request");
+  }
+
+  const guestName = sanitizeName(name, "");
+
+  // Reject names that become empty after sanitization.
+  if (!guestName) return fail("bad_request");
+
+  // Preserve the existing duplicate-name behavior.
+  const finalGuestName =
+    guestName.toLowerCase() === row.host_name.toLowerCase()
+      ? `${guestName} 2`.slice(0, MAX_NAME_LENGTH + 2)
+      : guestName;
+
+  return ok({
+    ...row,
+    guest_id: userId,
+    guest_name: finalGuestName,
+    status: "playing",
+  });
 }
+
 
 /** Validate and apply one move for `userId` using the shared game engine. */
 export function makeMove(row: RoomRow, userId: string, index: unknown): RoomResult {
