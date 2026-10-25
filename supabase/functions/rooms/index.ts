@@ -15,11 +15,14 @@ import {
   type RoomResult,
   type RoomRow,
 } from "../_shared/rooms.ts";
+import { BUILD_ID, createTimer, formatTimingLog, type Timer } from "../_shared/timing.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
+  // Lets browser tooling read the diagnostics below.
+  "Access-Control-Expose-Headers": "server-timing, x-request-id, x-rooms-build",
 };
 
 // Domain errors are returned with HTTP 200 + { ok: false, error } so the client can show
@@ -33,30 +36,57 @@ const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
+// --- diagnostics: which build is live, where it runs, and whether this request was a cold start ---
+const bootedAt = Date.now();
+const region = Deno.env.get("SB_REGION") ?? Deno.env.get("DENO_REGION") ?? "unknown";
+let served = 0;
+console.log(`[rooms boot] build=${BUILD_ID} region=${region}`);
+
 const randomInt = (max: number) => {
   const buf = new Uint32Array(1);
   crypto.getRandomValues(buf);
   return buf[0]! % max;
 };
 
-/** Read the room, apply a pure rule, write with an optimistic version check (retry on races). */
-async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise<RoomResult> {
-  for (let attempt = 0; attempt < 4; attempt++) {
+type RoomRead = { data: RoomRow | null; error: unknown };
+
+/** One database read of the room (timed as "db_read"). */
+const readRoom = (code: string, t: Timer): Promise<RoomRead> =>
+  t.span("db_read", async () => {
     const { data, error } = await admin.from("rooms").select("*").eq("code", code).maybeSingle();
+    return { data: data as RoomRow | null, error };
+  });
+
+/**
+ * Read the room, apply a pure rule, write with an optimistic version check (retry on races).
+ * `firstRead` is the read for attempt 1, started earlier so it overlaps with authentication.
+ */
+async function mutate(
+  code: string,
+  rule: (row: RoomRow) => RoomResult,
+  t: Timer,
+  ctx: { attempts: number },
+  firstRead: Promise<RoomRead>,
+): Promise<RoomResult> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    ctx.attempts++;
+    const { data, error } = attempt === 0 ? await firstRead : await readRoom(code, t);
     if (error) throw error;
     if (!data) return { ok: false, error: "not_found" };
-    const row = data as RoomRow;
+    const row = data;
 
-    const result = rule(row);
+    const result = await t.span("logic", () => rule(row));
     if (!result.ok || result.row === row) return result; // rejected, or nothing to write
 
-    const { data: updated, error: updateError } = await admin
-      .from("rooms")
-      .update({ ...writableColumns(result.row), version: row.version + 1, updated_at: new Date().toISOString() })
-      .eq("id", row.id)
-      .eq("version", row.version)
-      .select("*")
-      .maybeSingle();
+    const { data: updated, error: updateError } = await t.span("db_write", async () =>
+      admin
+        .from("rooms")
+        .update({ ...writableColumns(result.row), version: row.version + 1, updated_at: new Date().toISOString() })
+        .eq("id", row.id)
+        .eq("version", row.version)
+        .select("*")
+        .maybeSingle(),
+    );
     if (updateError) throw updateError;
     if (updated) return { ok: true, row: updated as RoomRow };
     // Someone else wrote first: reload and re-validate against the fresh state.
@@ -64,53 +94,104 @@ async function mutate(code: string, rule: (row: RoomRow) => RoomResult): Promise
   return { ok: false, error: "conflict" };
 }
 
-async function createRoom(userId: string, name: unknown, mode: unknown): Promise<RoomResult> {
+async function createRoom(userId: string, name: unknown, mode: unknown, t: Timer, ctx: { attempts: number }): Promise<RoomResult> {
   for (let attempt = 0; attempt < 8; attempt++) {
+    ctx.attempts++;
     const room = buildNewRoom(generateCode(randomInt), userId, name, mode);
     if (!room) return { ok: false, error: "bad_request" };
-    const { data, error } = await admin.from("rooms").insert(room).select("*").single();
+    const { data, error } = await t.span("db_write", async () => admin.from("rooms").insert(room).select("*").single());
     if (!error) return { ok: true, row: data as RoomRow };
     if (error.code !== "23505") throw error; // not a duplicate code -> real failure
   }
   return { ok: false, error: "conflict" };
 }
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-  if (req.method !== "POST") return fail("bad_request");
+interface Outcome {
+  action: string;
+  ok: boolean;
+  error: string | null;
+  attempts: number;
+}
+
+async function handle(req: Request, t: Timer, out: Outcome): Promise<Response> {
+  // Wrap responses so the outcome (ok / error code) is logged without touching response shapes.
+  const done = (r: RoomResult) => {
+    out.ok = r.ok;
+    out.error = r.ok ? null : r.error;
+    return reply(r);
+  };
+  const failed = (error: RoomError | "unauthorized") => {
+    out.error = error;
+    return fail(error);
+  };
+
+  if (req.method !== "POST") return failed("bad_request");
 
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  const { data: auth } = await admin.auth.getUser(token);
-  const user = auth.user;
-  if (!user) return json({ ok: false, error: "unauthorized" }, 401);
 
-  let body: Record<string, unknown>;
+  // The body is parsed first (local, instant) so the room read can start immediately and run
+  // IN PARALLEL with authentication instead of after it. The read result is not used unless the
+  // caller is authenticated, and every check below still happens in the original order.
+  let body: Record<string, unknown> | null = null;
   try {
     body = await req.json();
   } catch {
-    return fail("bad_request");
+    body = null;
   }
+  const action = typeof body?.["action"] === "string" ? (body["action"] as string) : "?";
+  out.action = action;
+
+  const code = body && action !== "create" ? normalizeCode(body["code"]) : null;
+  const firstRead = code ? readRoom(code, t) : null;
+  firstRead?.catch(() => undefined); // never an unhandled rejection if we bail out before using it
+
+  const { data: auth } = await t.span("auth", () => admin.auth.getUser(token));
+  const user = auth.user;
+  if (!user) {
+    out.error = "unauthorized";
+    return json({ ok: false, error: "unauthorized" }, 401);
+  }
+
+  if (!body) return failed("bad_request");
 
   try {
-    if (body.action === "create") return reply(await createRoom(user.id, body.name, body.mode));
+    if (action === "create") return done(await createRoom(user.id, body["name"], body["mode"], t, out));
 
-    const code = normalizeCode(body.code);
-    if (!code) return fail("invalid_code");
+    if (!code || !firstRead) return failed("invalid_code");
 
-    switch (body.action) {
+    switch (action) {
       case "join":
-        return reply(await mutate(code, (row) => joinRoom(row, user.id, body.name)));
+        return done(await mutate(code, (row) => joinRoom(row, user.id, body["name"]), t, out, firstRead));
       case "move":
-        return reply(await mutate(code, (row) => makeMove(row, user.id, body.index)));
+        return done(await mutate(code, (row) => makeMove(row, user.id, body["index"]), t, out, firstRead));
       case "rematch":
-        return reply(await mutate(code, (row) => requestRematch(row, user.id)));
+        return done(await mutate(code, (row) => requestRematch(row, user.id), t, out, firstRead));
       case "leave":
-        return reply(await mutate(code, (row) => leaveRoom(row, user.id)));
+        return done(await mutate(code, (row) => leaveRoom(row, user.id), t, out, firstRead));
       default:
-        return fail("bad_request");
+        return failed("bad_request");
     }
   } catch (err) {
-    console.error(err);
+    console.error(`[rooms error] id=${t.id}`, err);
+    out.error = "server_error";
     return json({ ok: false, error: "server_error" }, 500);
   }
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+
+  const cold = served++ === 0;
+  const t = createTimer(crypto.randomUUID().slice(0, 8));
+  const out: Outcome = { action: "?", ok: false, error: null, attempts: 0 };
+
+  const res = await handle(req, t, out);
+
+  res.headers.set("Server-Timing", t.serverTiming());
+  res.headers.set("x-request-id", t.id);
+  res.headers.set("x-rooms-build", BUILD_ID);
+  console.log(
+    formatTimingLog(t, { id: t.id, ...out, cold, isolateAgeMs: Date.now() - bootedAt, region, build: BUILD_ID }),
+  );
+  return res;
 });

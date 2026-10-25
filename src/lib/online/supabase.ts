@@ -62,7 +62,7 @@ export function createSupabaseTransport(): Transport {
           const row = payload.new as unknown as RoomRow | Record<string, never>;
           if ("id" in row) {
             console.info(
-              `[online timing] Realtime row received: version ${"version" in row ? row.version : "unknown"} at ${Math.round(receivedAt)} ms since page navigation`,
+              `[online timing] Realtime row received: version ${"version" in row ? row.version : "unknown"} (${Math.round(receivedAt)} ms since page navigation)`,
             );
             handlers.onRow(row);
           }
