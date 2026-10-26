@@ -1,4 +1,4 @@
-Tic-Tac-Toe 🎮
+Tic-Tac-Toe 
 
 A simple but fun game to play
 
@@ -16,7 +16,8 @@ Plan your moves and block your opponent to see who wins
 
 I Also added modern mode
 
-Modern Mode
+Modern Mode
+
 
 Modern Mode takes the traditional game of Tic-Tac-Toe and makes it more dynamic. Each player can only have 3 pieces on the board. With each move, the game can quickly change. You’ll need to think carefully about which piece will be removed next.
 
@@ -100,9 +101,12 @@ There are always ways to improve on a project. Some ideas I would like to add ar
 
 Single player mode against the computer.
 
-Score tracking.
-More themes and animations.
-Improved mobile responsiveness.
+Score tracking.
+
+More themes and animations.
+
+Improved mobile responsiveness.
+
 Online multiplayer.
 
 These are just ideas for improvement depending on how the project develops.
